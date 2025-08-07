@@ -48,7 +48,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
-                                               RowParallelLinear)
+                                               ReplicatedLinear)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.gptq import GPTQConfig
 from vllm.model_executor.layers.quantization.gptq_marlin import (
@@ -172,13 +172,21 @@ class Qwen2_5_VisionMLP(nn.Module):
                  quant_config: Optional[QuantizationConfig] = None,
                  prefix: str = ""):
         super().__init__()
-        self.gate_up_proj = MergedColumnParallelLinear(
-            input_size=in_features,
-            output_sizes=[hidden_features] * 2,  # [gate_proj, up_proj]
+        self.gate_proj = ReplicatedLinear(
+            in_features,
+            hidden_features,
             bias=bias,
             quant_config=quant_config,
-            prefix=f"{prefix}.gate_up_proj")
-        self.down_proj = RowParallelLinear(hidden_features,
+            prefix=f"{prefix}.gate_proj")
+
+        self.up_proj = ReplicatedLinear(
+            in_features,
+            hidden_features,
+            bias=bias,
+            quant_config=quant_config,
+            prefix=f"{prefix}.up_proj")
+
+        self.down_proj = ReplicatedLinear(hidden_features,
                                            in_features,
                                            bias=bias,
                                            quant_config=quant_config,
@@ -186,9 +194,10 @@ class Qwen2_5_VisionMLP(nn.Module):
         self.act_fn = act_fn
 
     def forward(self, x: torch.Tensor):
-        gate_up, _ = self.gate_up_proj(x)
-        x = self.act_fn(gate_up)
-        x_down, _ = self.down_proj(x)
+        x_gate, _ = self.gate_proj(x)
+        x_gate = self.act_fn(x_gate)
+        x_up, _ = self.up_proj(x)
+        x_down, _ = self.down_proj(x_gate * x_up)
         return x_down
 
 
