@@ -53,6 +53,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
+                                               ReplicatedLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
@@ -219,24 +220,22 @@ class Glm4vVisionAttention(nn.Module):
         prefix: str = "",
     ) -> None:
         super().__init__()
-        # Per attention head and per partition values.
-        self.tp_size = parallel_state.get_tensor_model_parallel_world_size()
-        self.tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        # Force TP size to 1 for VIT to disable tensor parallel
+        self.tp_size = 1
+        self.tp_rank = 0
         self.hidden_size_per_attention_head = dist_utils.divide(
             projection_size, num_heads)
-        self.num_attention_heads_per_partition = dist_utils.divide(
-            num_heads, self.tp_size)
+        self.num_attention_heads_per_partition = num_heads  # Use all heads on single device
 
-        self.qkv = QKVParallelLinear(
-            hidden_size=embed_dim,
-            head_size=self.hidden_size_per_attention_head,
-            total_num_heads=num_heads,
-            total_num_kv_heads=num_heads,
+        # Use ReplicatedLinear instead of parallel layers to disable tensor parallel
+        self.qkv = ReplicatedLinear(
+            embed_dim,
+            num_heads * self.hidden_size_per_attention_head * 3,
             bias=False,
             quant_config=quant_config,
             prefix=f"{prefix}.qkv",
         )
-        self.proj = RowParallelLinear(
+        self.proj = ReplicatedLinear(
             input_size=projection_size,
             output_size=embed_dim,
             quant_config=quant_config,
@@ -483,6 +482,7 @@ class Glm4vPatchMerger(nn.Module):
         x = self.act_fn(gate_up)
         x, _ = self.down_proj(x)
         return x
+
 
 
 class Glm4vVisionEmbeddings(nn.Module):

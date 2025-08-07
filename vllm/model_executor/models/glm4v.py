@@ -100,19 +100,20 @@ class EVA2CLIPAttention(nn.Module):
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.tp_size = get_tensor_model_parallel_world_size()
-        self.num_heads_per_rank = config.num_heads // self.tp_size
+        # Disable tensor parallelism
+        self.tp_size = 1
+        self.num_heads_per_rank = config.num_heads
         self.head_dim = config.hidden_size // config.num_heads
         self.scale = self.head_dim**-0.5
 
-        self.query_key_value = QKVParallelLinear(
+        # Use ReplicatedLinear instead of QKVParallelLinear to disable TP
+        self.query_key_value = ReplicatedLinear(
             config.hidden_size,
-            self.head_dim,
-            config.num_heads,
+            config.num_heads * self.head_dim * 3,
             quant_config=quant_config,
             prefix=f"{prefix}.query_key_value",
         )
-        self.dense = RowParallelLinear(
+        self.dense = ReplicatedLinear(
             config.hidden_size,
             config.hidden_size,
             quant_config=quant_config,
