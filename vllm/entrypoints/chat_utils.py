@@ -541,6 +541,8 @@ class BaseMultiModalItemTracker(ABC, Generic[_T]):
                 return "<|fim_prefix|><|img|><|fim_suffix|>"
             if model_type == "gemma3":
                 return "<start_of_image>"
+            if model_type == "glm4v_moe":
+                return "<|begin_of_image|><|image|><|end_of_image|>"
             if model_type == "kimi_vl":
                 return "<|media_start|>image<|media_content|><|media_pad|><|media_end|>" # noqa: E501
 
@@ -565,6 +567,8 @@ class BaseMultiModalItemTracker(ABC, Generic[_T]):
                 return "<|vision_start|><|VIDEO|><|vision_end|>"
             if model_type in ("minicpmo", "minicpmv"):
                 return "(<video>./</video>)"
+            if model_type == "glm4v_moe":
+                return "<|begin_of_video|><|video|><|end_of_video|>"
             if model_type.startswith("llava"):
                 return self._cached_token_str(self._tokenizer,
                                               hf_config.video_token_index)
