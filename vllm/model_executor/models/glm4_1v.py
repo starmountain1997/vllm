@@ -243,15 +243,6 @@ class Glm4vVisionAttention(nn.Module):
         #     num_heads, self.tp_size)
         self.num_attention_heads_per_partition = num_heads
 
-        # self.qkv = QKVParallelLinear(
-        #     hidden_size=embed_dim,
-        #     head_size=self.hidden_size_per_attention_head,
-        #     total_num_heads=num_heads,
-        #     total_num_kv_heads=num_heads,
-        #     bias=False,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.qkv",
-        # )
         self.qkv = ReplicatedLinear(
             embed_dim,
             num_heads * self.hidden_size_per_attention_head * 3,
@@ -259,13 +250,6 @@ class Glm4vVisionAttention(nn.Module):
             quant_config=quant_config,
             prefix=f"{prefix}.qkv"
         )
-        # self.proj = RowParallelLinear(
-        #     input_size=projection_size,
-        #     output_size=embed_dim,
-        #     quant_config=quant_config,
-        #     prefix=f"{prefix}.proj",
-        #     bias=False,
-        # )
         self.proj = ReplicatedLinear(
             input_size=projection_size,
             output_size=embed_dim,
@@ -314,7 +298,6 @@ class Glm4vVisionAttention(nn.Module):
             self,
             x: torch.Tensor,
             cu_seqlens: torch.Tensor,
-            # rotary_pos_emb: torch.Tensor,
             cos: torch.Tensor,
             sin: torch.Tensor,
             max_seqlen: Optional[int] = None,  # Only used for Flash Attention
@@ -327,10 +310,13 @@ class Glm4vVisionAttention(nn.Module):
         q, k, v = self.split_qkv(x)
         batch_size = q.shape[1]
 
-        q, k, v = (rearrange(x, "b s ... -> (b s) ...").contiguous() for x in (q, k, v))
+        q, k, v = (rearrange(x, "s b ... -> b s ...").contiguous()
+                   for x in (q, k, v))
+
         q = torch_npu.npu_rotary_mul(q, cos, sin)
         k = torch_npu.npu_rotary_mul(k, cos, sin)
-
+        q, k, v = (rearrange(x, "b s h d -> b h s d")
+                            for x in [q, k, v])
         output = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
         context_layer = rearrange(output, "b h s d -> s b (h d)").contiguous()
 
@@ -376,7 +362,6 @@ class Glm4vVisionBlock(nn.Module):
             self,
             x: torch.Tensor,
             cu_seqlens: torch.Tensor,
-            # rotary_pos_emb: torch.Tensor,
             cos: torch.Tensor,
             sin: torch.Tensor,
             max_seqlen: Optional[int] = None,  # Only used for Flash Attention
@@ -385,7 +370,6 @@ class Glm4vVisionBlock(nn.Module):
         x_attn = self.attn(
             self.norm1(x),
             cu_seqlens=cu_seqlens,
-            # rotary_pos_emb=rotary_pos_emb,
             cos=cos,
             sin=sin,
             max_seqlen=max_seqlen,
@@ -660,7 +644,7 @@ class Glm4vVisionTransformer(nn.Module):
 
         norm_layer = partial(RMSNorm, eps=norm_eps)
         self.head_dim = self.hidden_size // self.num_heads
-        self.rotary_pos_emb = Glm4vVisionRotaryEmbedding(head_dim // 2)
+        self.rotary_pos_emb = Glm4vVisionRotaryEmbedding(self.head_dim // 2)
         self.blocks = nn.ModuleList([
             Glm4vVisionBlock(
                 dim=self.hidden_size,
@@ -743,8 +727,8 @@ class Glm4vVisionTransformer(nn.Module):
         return max_seqlen, seqlens
 
     def cal_cos_sin(self, rotary_pos_emb):
-        cos = rot_pos_emb.cos()
-        sin = rot_pos_emb.sin()
+        cos = rotary_pos_emb.cos()
+        sin = rotary_pos_emb.sin()
 
         cos_new = torch.cat((cos, cos), dim=-1)
         sin_new = torch.cat((sin, sin), dim=-1)
