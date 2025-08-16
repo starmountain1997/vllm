@@ -33,6 +33,7 @@ from typing import Annotated, Any, Callable, Literal, Optional, Union
 
 import numpy as np
 import torch
+import torch_npu
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
@@ -53,6 +54,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
                                                MergedColumnParallelLinear,
                                                QKVParallelLinear,
+                                               ReplicatedLinear,
                                                RowParallelLinear)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
@@ -220,23 +222,40 @@ class Glm4vVisionAttention(nn.Module):
     ) -> None:
         super().__init__()
         # Per attention head and per partition values.
-        self.tp_size = parallel_state.get_tensor_model_parallel_world_size()
-        self.tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        # self.tp_size = parallel_state.get_tensor_model_parallel_world_size()
+        # self.tp_rank = parallel_state.get_tensor_model_parallel_rank()
+        self.tp_size = 1
+        self.tp_rank = 0
         self.hidden_size_per_attention_head = dist_utils.divide(
             projection_size, num_heads)
-        self.num_attention_heads_per_partition = dist_utils.divide(
-            num_heads, self.tp_size)
+        # self.num_attention_heads_per_partition = dist_utils.divide(
+        #     num_heads, self.tp_size)
+        self.num_attention_heads_per_partition = num_heads
 
-        self.qkv = QKVParallelLinear(
-            hidden_size=embed_dim,
-            head_size=self.hidden_size_per_attention_head,
-            total_num_heads=num_heads,
-            total_num_kv_heads=num_heads,
+        # self.qkv = QKVParallelLinear(
+        #     hidden_size=embed_dim,
+        #     head_size=self.hidden_size_per_attention_head,
+        #     total_num_heads=num_heads,
+        #     total_num_kv_heads=num_heads,
+        #     bias=False,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.qkv",
+        # )
+        self.qkv = ReplicatedLinear(
+            embed_dim,
+            num_heads * self.hidden_size_per_attention_head * 3,
             bias=False,
             quant_config=quant_config,
-            prefix=f"{prefix}.qkv",
+            prefix=f"{prefix}.qkv"
         )
-        self.proj = RowParallelLinear(
+        # self.proj = RowParallelLinear(
+        #     input_size=projection_size,
+        #     output_size=embed_dim,
+        #     quant_config=quant_config,
+        #     prefix=f"{prefix}.proj",
+        #     bias=False,
+        # )
+        self.proj = ReplicatedLinear(
             input_size=projection_size,
             output_size=embed_dim,
             quant_config=quant_config,
@@ -288,7 +307,9 @@ class Glm4vVisionAttention(nn.Module):
             self,
             x: torch.Tensor,
             cu_seqlens: torch.Tensor,
-            rotary_pos_emb: torch.Tensor,
+            # rotary_pos_emb: torch.Tensor,
+            cos: torch.Tensor,
+            sin: torch.Tensor,
             max_seqlen: Optional[int] = None,  # Only used for Flash Attention
             seqlens: Optional[list[int]] = None,  # Only used for xFormers
     ) -> torch.Tensor:
@@ -305,59 +326,12 @@ class Glm4vVisionAttention(nn.Module):
             q = apply_rotary_pos_emb_vision(q, rotary_pos_emb)
             k = apply_rotary_pos_emb_vision(k, rotary_pos_emb)
 
-        if self.attn_backend == _Backend.FLASH_ATTN:
-            # from vllm_flash_attn.flash_attn_interface import (
-            #   flash_attn_varlen_func)
-            from flash_attn import flash_attn_varlen_func
-
-            q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in [q, k, v])
-
-            output = flash_attn_varlen_func(
-                q,
-                k,
-                v,
-                cu_seqlens_q=cu_seqlens,
-                cu_seqlens_k=cu_seqlens,
-                max_seqlen_q=max_seqlen,
-                max_seqlen_k=max_seqlen,
-                dropout_p=0,
-                causal=False,
-            )
-
-            context_layer = rearrange(output,
-                                      "(b s) ... -> b s ...",
-                                      b=batch_size)
-        elif self.attn_backend == _Backend.TORCH_SDPA:
-            # Execute attention entry by entry for speed & less VRAM.
-            outputs = []
-            for i in range(1, len(cu_seqlens)):
-                start_idx = cu_seqlens[i - 1]
-                end_idx = cu_seqlens[i]
-                q_i = q[:, start_idx:end_idx]
-                k_i = k[:, start_idx:end_idx]
-                v_i = v[:, start_idx:end_idx]
-                q_i, k_i, v_i = (rearrange(x, "b s h d -> b h s d")
-                                 for x in [q_i, k_i, v_i])
-                output_i = F.scaled_dot_product_attention(q_i,
-                                                          k_i,
-                                                          v_i,
-                                                          dropout_p=0.0)
-                output_i = rearrange(output_i, "b h s d -> b s h d ")
-                outputs.append(output_i)
-            context_layer = torch.cat(outputs, dim=1)
-        elif self.attn_backend == _Backend.XFORMERS:
-            from xformers import ops as xops
-            from xformers.ops.fmha.attn_bias import BlockDiagonalMask
-
-            attn_bias = BlockDiagonalMask.from_seqlens(q_seqlen=seqlens,
-                                                       kv_seqlen=None,
-                                                       device=q.device)
-
-            context_layer = xops.memory_efficient_attention_forward(
-                q, k, v, attn_bias=attn_bias, p=0, scale=None)
-
-        context_layer = rearrange(context_layer,
-                                  "b s h d -> s b (h d)").contiguous()
+        q, k, v = (rearrange(x, "b s ... -> (b s) ...").contiguous() for x in (q, k, v))
+        q = torch_npu.npu_rotary_mul(q, cos, sin)
+        k = torch_npu.npu_rotary_mul(k, cos, sin)
+            
+        output = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+        context_layer = rearrange(output, "b h s d -> s b (h d)").contiguous()
 
         output, _ = self.proj(context_layer)
         return output
@@ -398,14 +372,18 @@ class Glm4vVisionBlock(nn.Module):
             self,
             x: torch.Tensor,
             cu_seqlens: torch.Tensor,
-            rotary_pos_emb: torch.Tensor,
+            # rotary_pos_emb: torch.Tensor,
+            cos: torch.Tensor,
+            sin: torch.Tensor,
             max_seqlen: Optional[int] = None,  # Only used for Flash Attention
             seqlens: Optional[list[int]] = None,  # Only used for xFormers
     ) -> torch.Tensor:
         x = x + self.attn(
             self.norm1(x),
             cu_seqlens=cu_seqlens,
-            rotary_pos_emb=rotary_pos_emb,
+            # rotary_pos_emb=rotary_pos_emb,
+            cos=cos,
+            sin=sin,
             max_seqlen=max_seqlen,
             seqlens=seqlens,
         )
@@ -649,7 +627,7 @@ class Glm4vVisionTransformer(nn.Module):
         )
 
         norm_layer = partial(RMSNorm, eps=norm_eps)
-        head_dim = self.hidden_size // self.num_heads
+        self.head_dim = self.hidden_size // self.num_heads
         self.rotary_pos_emb = Glm4vVisionRotaryEmbedding(head_dim // 2)
         self.blocks = nn.ModuleList([
             Glm4vVisionBlock(
@@ -726,6 +704,18 @@ class Glm4vVisionTransformer(nn.Module):
             max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
         return max_seqlen, seqlens
 
+    def cal_cos_sin(self, rotary_pos_emb):
+        cos = rot_pos_emb.cos()
+        sin = rot_pos_emb.sin()
+
+        cos_new = torch.cat((cos, cos), dim=-1)
+        sin_new = torch.cat((sin, sin), dim=-1)
+
+        cos_new = cos_new.reshape(1, -1, 1, self.head_dim)
+        sin_new = sin_new.reshape(1, -1, 1, self.head_dim)
+
+        return cos_new, sin_new
+
     def forward(
         self,
         x: torch.Tensor,
@@ -749,13 +739,16 @@ class Glm4vVisionTransformer(nn.Module):
         x = self.embeddings(x, seqlens, grid_thw, image_type_ids[:, 0],
                             image_type_ids[:, 1])
 
+        cos, sin = self.cal_cos_sin(rotary_pos_emb)
+
         # transformers
         x = x.unsqueeze(1)
         for blk in self.blocks:
             x = blk(
                 x,
                 cu_seqlens=cu_seqlens,
-                rotary_pos_emb=rotary_pos_emb,
+                cos=cos,
+                sin=sin,
                 max_seqlen=max_seqlen,
                 seqlens=seqlens,
             )
@@ -766,7 +759,9 @@ class Glm4vVisionTransformer(nn.Module):
         x = x.view(-1, self.spatial_merge_size, self.spatial_merge_size,
                    x.shape[-1])
         x = x.permute(0, 3, 1, 2)
-        x = self.downsample(x).view(-1, self.out_hidden_size)
+        # x = self.downsample(x).view(-1, self.out_hidden_size)
+        x = x.reshape(-1, self.spatial_merge_size * self.spatial_merge_size * x.shape[1])
+        x = x.matmul(self.downsample.weight.data.view(self.out_hidden_size, -1).transpose(0, 1))
         x = self.merger(x)
 
         return x
