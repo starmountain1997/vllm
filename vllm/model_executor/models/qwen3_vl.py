@@ -502,6 +502,8 @@ class Qwen3_VisionTransformer(nn.Module):
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
+                if "deepstack_merger_list" in name and "ln_q" in name:
+                    name = name.replace("ln_q", "norm")
                 param = params_dict[name]
                 weight_loader = getattr(param, "weight_loader",
                                         default_weight_loader)
