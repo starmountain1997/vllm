@@ -306,7 +306,10 @@ class Qwen3_VisionTransformer(nn.Module):
             for layer_idx in range(len(self.deepstack_visual_indexes))
         ])
 
-        self.attn_backend: _Backend = get_vit_attn_backend(support_fa=True)
+        self.attn_backend: _Backend = get_vit_attn_backend(
+            head_size=self.hidden_size // self.num_heads,
+            dtype=self.dtype
+        )
 
     @property
     def dtype(self) -> torch.dtype:
