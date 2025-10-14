@@ -293,10 +293,12 @@ class Qwen3MoeLLMForCausalLM(Qwen3MoeForCausalLM):
         self.config = vllm_config.model_config.hf_config.text_config
         self.quant_config = vllm_config.quant_config
         self.model = Qwen3MoeLLMModel(vllm_config=vllm_config,
-                                      prefix=maybe_prefix(prefix, "model"))
+                                      prefix=maybe_prefix(prefix, "model.language_model"))
         self.lm_head = ParallelLMHead(self.config.vocab_size,
                                       self.config.hidden_size,
-                                      quant_config=self.quant_config)
+                                      quant_config=self.quant_config,
+                                      prefix=maybe_prefix(prefix, "lm_head")
+                                      )
         if self.config.tie_word_embeddings:
             self.lm_head.weight = self.model.embed_tokens.weight
         self.logits_processor = LogitsProcessor(self.config.vocab_size)
@@ -323,7 +325,7 @@ class Qwen3VLMoeForConditionalGeneration(Qwen3VLForConditionalGeneration):
             config.vision_config,
             norm_eps=getattr(config, "rms_norm_eps", 1e-6),
             quant_config=self._maybe_ignore_quant_config(quant_config),
-            prefix=maybe_prefix(prefix, "visual"),
+            prefix=maybe_prefix(prefix, "model.visual"),
             use_data_parallel=self.use_data_parallel,
         )
 
