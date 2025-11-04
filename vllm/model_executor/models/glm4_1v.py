@@ -678,7 +678,7 @@ class Glm4vVisionTransformer(nn.Module):
                                       eps=vision_config.rms_norm_eps)
 
         self.attn_backend = get_vit_attn_backend(
-            head_size=head_dim, dtype=torch.get_default_dtype())
+            head_size=self.head_dim, dtype=torch.get_default_dtype())
         if self.attn_backend != _Backend.FLASH_ATTN and \
             check_upstream_fa_availability(torch.get_default_dtype()):
             self.attn_backend = _Backend.FLASH_ATTN
