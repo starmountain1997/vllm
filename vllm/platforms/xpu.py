@@ -108,7 +108,10 @@ class XPUPlatform(Platform):
         model_config = vllm_config.model_config
         # in V1(or with ipex chunked prefill) block_size is 64
         if cache_config and cache_config.block_size is None:
-            cache_config.block_size = 64
+            if envs.VLLM_USE_V1:
+                cache_config.block_size = 64
+            else:
+                cache_config.block_size = 16
 
         # lazy import to avoid circular import
         from vllm.config import CompilationLevel, CUDAGraphMode
@@ -124,7 +127,11 @@ class XPUPlatform(Platform):
 
         # check and update parallel config
         parallel_config = vllm_config.parallel_config
-        parallel_config.worker_cls = "vllm.v1.worker.xpu_worker.XPUWorker"
+        if envs.VLLM_USE_V1:
+            parallel_config.worker_cls =\
+                "vllm.v1.worker.xpu_worker.XPUWorker"
+        else:
+            parallel_config.worker_cls = "vllm.worker.xpu_worker.XPUWorker"
 
         if parallel_config.distributed_executor_backend is None:
             if parallel_config.world_size > 1:

@@ -39,8 +39,7 @@ DEVICE_REGULAR_ATTN_BACKENDS = {
 DEVICE_MLA_BLOCK_SIZES = {
     "cuda": [16, 64],  # CUDA supports both standard and extended block sizes
     "hip": [16, 1],  # HIP requires special handling for block_size=1
-    # "cpu": [16]  # CPU uses fixed block size from test cases
-    "cpu": []  # FIXME(woosuk): Temporarily disable CPU tests
+    "cpu": [16]  # CPU uses fixed block size from test cases
 }
 
 
@@ -85,7 +84,8 @@ def test_env(
         if device == "cpu":
             with patch("vllm.attention.selector.current_platform",
                        CpuPlatform()):
-                backend = get_attn_backend(16, torch.float16, None, block_size)
+                backend = get_attn_backend(16, torch.float16, torch.float16,
+                                           block_size, False)
             assert backend.get_name() == "TORCH_SDPA"
 
         elif device == "hip":
@@ -250,7 +250,8 @@ def test_fp32_fallback(
         if device == "cpu":
             with patch("vllm.attention.selector.current_platform",
                        CpuPlatform()):
-                backend = get_attn_backend(16, torch.float32, None, 16)
+                backend = get_attn_backend(16, torch.float32, torch.float32,
+                                           16, False)
             assert backend.get_name() == "TORCH_SDPA"
 
         elif device == "cuda":

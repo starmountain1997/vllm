@@ -1973,13 +1973,23 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # NOTE(woosuk): To unify token ids and soft tokens (vision
             # embeddings), we always use embeddings (rather than token ids)
             # as input to the multimodal model, even when the input is text.
-            inputs_embeds_scheduled = self.model.get_input_embeddings(
-                input_ids=self.input_ids.gpu[:num_scheduled_tokens],
-                multimodal_embeddings=mm_embeds or None,
-            )
+            input_ids = self.input_ids.gpu[:num_scheduled_tokens]
+            if mm_embeds:
+                inputs_embeds = self.model.get_input_embeddings(
+                    input_ids, mm_embeds)
+            else:
+                inputs_embeds = self.model.get_input_embeddings(input_ids)
+
+            input_embeds_multiscale = None
+            # support for multi stack for qwen3-omni
+            if isinstance(inputs_embeds, tuple):
+                input_embeds_multiscale = inputs_embeds[1]
+                inputs_embeds = inputs_embeds[0]
 
             # TODO(woosuk): Avoid the copy. Optimize.
             self.inputs_embeds.gpu[:num_scheduled_tokens].copy_(
+                inputs_embeds, non_blocking=True)
+            inputs_embeds_scheduled = self.inputs_embeds.gpu
                 inputs_embeds_scheduled)
 
             input_ids = None
@@ -2038,6 +2048,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             encoder_inputs = self._extract_encoder_inputs(scheduler_output)
             model_kwargs.update(encoder_inputs)
 
+<<<<<<< HEAD
         return (
             num_scheduled_tokens,
             num_input_tokens,
@@ -2048,6 +2059,80 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             intermediate_tensors,
             model_kwargs,
         )
+=======
+        # Run the model.
+        # Use persistent buffers for CUDA graphs.
+        with set_forward_context(
+                attn_metadata,
+                self.vllm_config,
+                num_tokens=num_input_tokens,
+                num_tokens_across_dp=num_tokens_across_dp,
+                skip_cuda_graphs=skip_cuda_graphs,
+        ):
+            self.maybe_setup_kv_connector(scheduler_output)
+
+            if input_embeds_multiscale is not None:
+                model_output = self.model(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                    input_embeds_multiscale=input_embeds_multiscale
+                )
+            else:
+                model_output = self.model(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                )
+
+            self.maybe_wait_for_kv_save()
+            finished_sending, finished_recving = (
+                self.get_finished_kv_transfers(scheduler_output))
+
+        if self.use_aux_hidden_state_outputs:
+            hidden_states, aux_hidden_states = model_output
+        else:
+            hidden_states = model_output
+            aux_hidden_states = None
+
+        # Broadcast PP output for external_launcher (torchrun)
+        # to make sure we are synced across pp ranks
+        # TODO: Support overlapping mirco-batches
+        # https://github.com/vllm-project/vllm/issues/18019
+        broadcast_pp_output = \
+            self.parallel_config.distributed_executor_backend \
+            == "external_launcher" and len(get_pp_group().ranks) > 0
+        if not get_pp_group().is_last_rank:
+            # For mid-pipeline stages, return the hidden states.
+            if not broadcast_pp_output:
+                return hidden_states
+            assert isinstance(hidden_states, IntermediateTensors)
+            get_pp_group().send_tensor_dict(hidden_states.tensors,
+                                            all_gather_group=get_tp_group())
+            logits = None
+        else:
+            if self.input_batch.pooling_params:
+                return self._pool(hidden_states, num_scheduled_tokens,
+                                  num_scheduled_tokens_np, finished_sending,
+                                  finished_recving)
+
+            sample_hidden_states = hidden_states[logits_indices]
+            logits = self.model.compute_logits(sample_hidden_states, None)
+        if broadcast_pp_output:
+            model_output_broadcast_data = {
+                "logits": logits.contiguous(),
+            } if logits is not None else {}
+            model_output_broadcast_data = get_pp_group().broadcast_tensor_dict(
+                model_output_broadcast_data, src=len(get_pp_group().ranks) - 1)
+            assert model_output_broadcast_data is not None
+            logits = model_output_broadcast_data["logits"]
+
+        # Apply structured output bitmasks if present
+        if scheduler_output.grammar_bitmask is not None:
+            self.apply_grammar_bitmask(scheduler_output, logits)
+>>>>>>> wangxiongts/qwen3_omni
 
     def _sample(
             self, logits: Optional[torch.Tensor],
