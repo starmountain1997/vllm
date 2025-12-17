@@ -564,6 +564,14 @@ def invoke_fused_moe_kernel(
     block_shape: list[int] | None = None,
     B_bias: torch.Tensor | None = None,
 ) -> None:
+    print(f"[TRITON_DEBUG] invoke_fused_moe_kernel | A: shape={A.shape}, dtype={A.dtype}")
+    print(f"[TRITON_DEBUG] invoke_fused_moe_kernel | B: shape={B.shape}, dtype={B.dtype}")
+    print(f"[TRITON_DEBUG] invoke_fused_moe_kernel | C: shape={C.shape}, dtype={C.dtype}")
+    if topk_weights is not None:
+        print(f"[TRITON_DEBUG] invoke_fused_moe_kernel | topk_weights: shape={topk_weights.shape}, dtype={topk_weights.dtype}")
+    print(f"[TRITON_DEBUG] invoke_fused_moe_kernel | sorted_token_ids: shape={sorted_token_ids.shape}, dtype={sorted_token_ids.dtype}")
+    print(f"[TRITON_DEBUG] invoke_fused_moe_kernel | expert_ids: shape={expert_ids.shape}, dtype={expert_ids.dtype}")
+
     assert topk_weights is not None or not mul_routed_weight
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1

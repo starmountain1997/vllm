@@ -361,6 +361,11 @@ def deep_gemm_moe_fp8(
     Returns:
     - torch.Tensor: The bfloat16 output tensor after applying the MoE layer.
     """
+    print(f"[TRITON_DEBUG] deep_gemm_moe_fp8 | hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}")
+    print(f"[TRITON_DEBUG] deep_gemm_moe_fp8 | w1: shape={w1.shape}, dtype={w1.dtype}")
+    print(f"[TRITON_DEBUG] deep_gemm_moe_fp8 | w2: shape={w2.shape}, dtype={w2.dtype}")
+    print(f"[TRITON_DEBUG] deep_gemm_moe_fp8 | topk_ids: shape={topk_ids.shape}, dtype={topk_ids.dtype}")
+
     quant_config = fp8_w8a8_moe_quant_config(
         w1_scale=w1_scale,
         w2_scale=w2_scale,

@@ -675,6 +675,12 @@ def decode_attention_fwd(
     page_size=1,
     logit_cap=0.0,
 ):
+    print(f"[TRITON_DEBUG] decode_attention_fwd | q: shape={q.shape}, dtype={q.dtype}")
+    print(f"[TRITON_DEBUG] decode_attention_fwd | k_buffer: shape={k_buffer.shape}, dtype={k_buffer.dtype}")
+    print(f"[TRITON_DEBUG] decode_attention_fwd | v_buffer: shape={v_buffer.shape}, dtype={v_buffer.dtype}")
+    print(f"[TRITON_DEBUG] decode_attention_fwd | o: shape={o.shape}, dtype={o.dtype}")
+    print(f"[TRITON_DEBUG] decode_attention_fwd | attn_logits: shape={attn_logits.shape}, dtype={attn_logits.dtype}")
+    
     assert num_kv_splits == attn_logits.shape[2]
     kv_group_num = q.shape[1] // v_buffer.shape[-2]
 

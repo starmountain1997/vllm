@@ -580,6 +580,8 @@ def per_token_group_quant_fp8(
         tuple[torch.Tensor, torch.Tensor]: The quantized tensor and the
         scaling factor.
     """
+    print(f"[TRITON_DEBUG] per_token_group_quant_fp8 | x: shape={x.shape}, dtype={x.dtype}, group_size={group_size}")
+
     if use_ue8m0 is None:
         use_ue8m0 = is_deep_gemm_e8m0_used()
     dtype = current_platform.fp8_dtype() if dtype is None else dtype
